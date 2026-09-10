@@ -1,4 +1,4 @@
-module github.com/Chathuru/kubernetes-cluster-autoscaler
+module github.com/WassimDhib/kubernetes-cluster-autoscaler
 
 go 1.22.0
 

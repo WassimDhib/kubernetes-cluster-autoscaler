@@ -1,7 +1,7 @@
 package openstackinit
 
 import (
-	"github.com/Chathuru/kubernetes-cluster-autoscaler/pkg/common/datastructures"
+	"github.com/WassimDhib/kubernetes-cluster-autoscaler/pkg/common/datastructures"
 	"github.com/gophercloud/gophercloud"
 	"github.com/gophercloud/gophercloud/openstack"
 	"gopkg.in/yaml.v3"
@@ -9,22 +9,20 @@ import (
 	"log"
 	"time"
 	"os"
+	"regexp"
 )
+
 
 // FlavorsList, and other list og global variables
 var (
 	FlavorsList         datastructures.FlavorList
-	NetworkUUID_a         string
-        NetworkUUID_d         string
-	NetworkUUID_p         string
 	CoolDownTime        time.Duration
 	IgnoreNamespaceList map[string]bool
 	MinNodeCount        int
 	MaxNodeCount        int
 	ImageName           string
-	PlatformPrefix	    string
-	RepoBaseUrl	    string
-	SecurityGroupName   string
+	PlatformPrefix      string
+	RepoBaseUrl         string
 	IdentityEndpoint    string
 	Username            string
 	Password            string
@@ -35,13 +33,19 @@ var (
 	ClientID            string
 	AWSRegion           string
 	AuthFile            string
+	Networks 			[]Network
+	NetworkAdmin 		Network
+	NetworkData 		Network
+	SecurityGroupsMap 	map[string][]string
+	NetworkPub 			Network
+	Openbar_SG 			string
 )
 
 // ConfigYaml used to decode the configuration file
 type ConfigYaml struct {
 	CloudType          string            `yaml:"CloudType"`
 	AuthOptions        AuthOptions       `yaml:"AuthOptions"`
-	Network            Network           `yaml:"Network"`
+	Networks 		   []Network 		 `yaml:"Networks"` // Map structure for networks
 	WorkerImageName    string            `yaml:"WorkerImageName"`
 	PlatformPrefix	   string            `yaml:"PlatformPrefix"`
 	RepoBaseUrl        string            `yaml:"RepoBaseUrl"`
@@ -50,6 +54,7 @@ type ConfigYaml struct {
 	MaxNodeCount       int               `yaml:"MaxNodeCount"`
 	OpenStackFlavours  OpenStackFlavours `yaml:"OpenStackFlavours"`
 	PassConfigToPlugin bool              `yaml:"PassConfigToPlugin"`
+	Openbar_SG         string			 `yaml:"Openbar_SG"`	
 }
 
 // AuthOptions list of credentials to authenticate cloud infrastructure
@@ -69,12 +74,17 @@ type AuthOptions struct {
 // Network OpenStack network configuration to used
 // when creating worker nodes
 type Network struct {
-	SecurityGroupName string `yaml:"SecurityGroupName"`
-	NetworkUUID_a       string `yaml:"NetworkUUID_a"`
-	NetworkUUID_p       string `yaml:"NetworkUUID_p"`
-	NetworkUUID_d       string `yaml:"NetworkUUID_d"`
-
+	Name 		  string   `yaml:"Name"`
+	UUID          string   `yaml:"UUID"`
+	Port          string   `yaml:"port,omitempty"`
+	FixedIP       string   `yaml:"fixed_ip,omitempty"`
+	Subnet        string   `yaml:"subnet,omitempty"`  
+	SecurityGroups []string `yaml:"SecurityGroups"`
+	Tags          []string `yaml:"tags,omitempty"`    
+	Check         bool     `yaml:"check,omitempty"`   
 }
+
+
 
 // OpenStackFlavours user configured Open Stack Flavours in the config file.
 type OpenStackFlavours struct {
@@ -99,7 +109,7 @@ func ReadConfig() string {
 	conf := ConfigYaml{}
 	err = yaml.Unmarshal(ConfigFile, &conf)
 	if err != nil {
-		log.Fatalf("[ERROR] Error decording Config YAML file: %s\n", err)
+		log.Fatalf("[ERROR] Error decoding Config YAML file: %s\n", err)
 	}
 
 	if conf.CloudType == "" {
@@ -110,31 +120,36 @@ func ReadConfig() string {
 	Password = conf.AuthOptions.Password
 	TenantID = conf.AuthOptions.TenantID
 	DomainName = conf.AuthOptions.DomainName
-	if conf.CloudType == "OpenStack" && (IdentityEndpoint == "" || Username == "" || Password == "" || TenantID == "" || DomainName == "") {
-		log.Fatal("[ERROR] Authentication details should not be empty.")
-	}
+	Openbar_SG = conf.Openbar_SG
+	admRegex := regexp.MustCompile(`adm`)
+	dataRegex := regexp.MustCompile(`data`)
+	pubRegex := regexp.MustCompile(`pub`)
 
-	if conf.CloudType == "AWS" && conf.AuthOptions.AWSRegion == "" {
-		log.Fatal("[ERROR] AWS Region should be a valid value")
+	for _, network := range conf.Networks {
+		switch {
+		case admRegex.MatchString(network.Name):
+			NetworkAdmin = network
+		case dataRegex.MatchString(network.Name):
+			NetworkData = network
+		case pubRegex.MatchString(network.Name):
+			NetworkPub = network
+		}
 	}
-
-	if conf.CloudType == "GCP" && conf.AuthOptions.ProjectName == "" {
-		log.Fatal("[ERROR] Project name should not be empty")
-	}
-
+	
 	CoolDownTime = time.Duration(conf.CoolDownTime)
 	MinNodeCount = conf.MinNodeCount
 	MaxNodeCount = conf.MaxNodeCount
 	ImageName = conf.WorkerImageName
 	PlatformPrefix = conf.PlatformPrefix
 	RepoBaseUrl = conf.RepoBaseUrl
-	SecurityGroupName = conf.Network.SecurityGroupName
-	NetworkUUID_a = conf.Network.NetworkUUID_a
-	NetworkUUID_p = conf.Network.NetworkUUID_p
-	NetworkUUID_d = conf.Network.NetworkUUID_d
+	// Assign network configurations to specific variables based on their keys
+	// Iterate over the slice to assign networks to respective variables
+	SecurityGroupsMap = make(map[string][]string)
+	for _, network := range conf.Networks {
+		SecurityGroupsMap[network.Name] = network.SecurityGroups
+	}
 
-
-	FlavorDetails := []datastructures.FlavorDetails{}
+	var FlavorDetails []datastructures.FlavorDetails
 	for _, Flavor := range conf.OpenStackFlavours.Flavours {
 		FlavorDetails = append(FlavorDetails, datastructures.FlavorDetails{Flavor.Name, Flavor.VCPU, Flavor.Memory})
 	}
@@ -161,8 +176,9 @@ func GetOpenstackToken() *gophercloud.ServiceClient {
 	if err != nil {
 		panic(err)
 	}
-	client, err := openstack.NewComputeV2(provider, gophercloud.EndpointOpts{Region: os.Getenv("OS_REGION_NAME"),})
- 	if err != nil {		panic(err)
+	client, err := openstack.NewComputeV2(provider, gophercloud.EndpointOpts{Region: os.Getenv("OS_REGION_NAME")})
+	if err != nil {
+		panic(err)
 	}
  
 	return client
@@ -186,11 +202,10 @@ func GetOpenstackNeutronToken() *gophercloud.ServiceClient {
 	if err != nil {
 		panic(err)
 	}
-	client, err := openstack.NewNetworkV2(provider, gophercloud.EndpointOpts{Region: os.Getenv("OS_REGION_NAME"),})
- 	if err != nil {		panic(err)
+	client, err := openstack.NewNetworkV2(provider, gophercloud.EndpointOpts{Region: os.Getenv("OS_REGION_NAME")})
+	if err != nil {
+		panic(err)
 	}
  
 	return client
 }
-
-

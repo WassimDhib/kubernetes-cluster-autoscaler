@@ -2,8 +2,8 @@ package handelnodedelete
 
 import (
 	"context"
-	"github.com/Chathuru/kubernetes-cluster-autoscaler/pkg/cloud/openstack"
-	"github.com/Chathuru/kubernetes-cluster-autoscaler/pkg/common/datastructures"
+	"github.com/WassimDhib/kubernetes-cluster-autoscaler/pkg/cloud/openstack"
+	"github.com/WassimDhib/kubernetes-cluster-autoscaler/pkg/common/datastructures"
 	"github.com/gophercloud/gophercloud/openstack/compute/v2/servers"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
@@ -53,9 +53,13 @@ func DeleteEventAnalyzer(EventList datastructures.Event, config *rest.Config) {
 
 		if (cpu/cpuCap)*100 <= 5 && count < 5 && openstackinit.MinNodeCount < nodeCount && strings.HasPrefix(node.Name, openstackinit.PlatformPrefix+"kube-worker-") {
 			log.Printf("[INFO] Node Name - %s ID - %s marked to delete. Will delete in %d minutes", node.Name, node.Status.NodeInfo.SystemUUID, openstackinit.CoolDownTime/60)
-			go RemoveWorkerNode(clientSet, node.Name, node.Status.NodeInfo.SystemUUID)
+			if err := CordonNode(clientSet, node.Name); err != nil {
+				log.Printf("[ERROR] Could not cordon node %s, skipping removal this round: %v", node.Name, err)
+			} else {
+				go RemoveWorkerNode(clientSet, node.Name, node.Status.NodeInfo.SystemUUID)
+			}
 		} else {
-			log.Printf("[INFO] Node Name - %s ID - %s NOT marked to delete. nodeCount = %d count = %d cpu = %f cpuCap = %f ", node.Name, node.Status.NodeInfo.SystemUUID, nodeCount, count, cpu, cpuCap )
+			log.Printf("[INFO] Node Name - %s ID - %s NOT marked to delete. nodeCount = %d count = %d cpu = %f cpuCap = %f", node.Name, node.Status.NodeInfo.SystemUUID, nodeCount, count, cpu, cpuCap)
 
 		}
 	}
@@ -87,12 +91,50 @@ func RemoveWorkerNode(clientSet *kubernetes.Clientset, nodeName, nodeID string) 
 	}
 
 	if (cpu/cpuCap)*100 > 5 || count > 5 {
-		log.Printf("[INFO] Some pod are assing to the %s node. Stop removing the node", nodeName)
+		log.Printf("[INFO] Some pods are still assigned to node %s. Skipping removal, keeping it uncordoned", nodeName)
+		if err := UncordonNode(clientSet, nodeName); err != nil {
+			log.Printf("[ERROR] Could not uncordon node %s, it will stay unschedulable until fixed manually: %v", nodeName, err)
+		}
 	} else {
 		clientSet.CoreV1().Nodes().Delete(context.TODO(), nodeName, metav1.DeleteOptions{})
 		DeleteVM(nodeID)
-		log.Printf("[INFO] %s (%s) Node safly remove from the cluster and delete the virtual machine", nodeName, nodeID)
+		log.Printf("[INFO] %s (%s) : Node has left the kubernetes cluster,  The OS instance has been deleted", nodeName, nodeID)
 	}
+}
+
+// CordonNode marks a node unschedulable so no new pod can land on it while it
+// is a deletion candidate. It does not evict pods already running there.
+func CordonNode(clientSet *kubernetes.Clientset, nodeName string) error {
+	node, err := clientSet.CoreV1().Nodes().Get(context.TODO(), nodeName, metav1.GetOptions{})
+	if err != nil {
+		return err
+	}
+	if node.Spec.Unschedulable {
+		return nil
+	}
+	node.Spec.Unschedulable = true
+	_, err = clientSet.CoreV1().Nodes().Update(context.TODO(), node, metav1.UpdateOptions{})
+	if err == nil {
+		log.Printf("[INFO] Node %s cordoned (unschedulable) pending removal decision", nodeName)
+	}
+	return err
+}
+
+// UncordonNode reverts CordonNode when the node is ultimately kept in the cluster.
+func UncordonNode(clientSet *kubernetes.Clientset, nodeName string) error {
+	node, err := clientSet.CoreV1().Nodes().Get(context.TODO(), nodeName, metav1.GetOptions{})
+	if err != nil {
+		return err
+	}
+	if !node.Spec.Unschedulable {
+		return nil
+	}
+	node.Spec.Unschedulable = false
+	_, err = clientSet.CoreV1().Nodes().Update(context.TODO(), node, metav1.UpdateOptions{})
+	if err == nil {
+		log.Printf("[INFO] Node %s uncordoned, back in service", nodeName)
+	}
+	return err
 }
 
 // DeleteVM delete the virtual machine from the OpenStack

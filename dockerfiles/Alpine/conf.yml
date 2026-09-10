@@ -1,0 +1,34 @@
+CloudType: OpenStack
+AuthOptions:
+   IdentityEndpoint: "https://openstack.example-internal.local:5000"
+   Username: "service-account-username"
+   Password: "L82aF0dlBT013iIK"
+   TenantID: "f28b572323b5422b88eb1249d69f2090"
+   DomainName: "Default"
+
+CoolDownTime: 100
+MinNodeCount: 1
+MaxNodeCount: 10
+WorkerImageName: "rocky9"
+PlatformPrefix: "scaled-epocv2-qua01-"
+RepoBaseUrl: "http://172.16.0.46"
+
+Networks:
+  - Name: "epoc-01-network-adm-qua"
+    SecurityGroups:
+      - "epoc-01-sg-admin-worker-qua"
+      - "epoc-01-sg-admin-common-qua"
+  - Name: "epoc-01-network-data-qua"
+    SecurityGroups:
+      - "epoc-01-sg-data-worker-qua"
+      - "epoc-01-sg-data-common-qua"
+  - Name: "epoc-01-network-pub-qua"
+    SecurityGroups:
+      - "epoc-01-sg-public-worker-qua"
+      - "epoc-01-sg-public-common-qua"
+OpenStackFlavours:
+   DefaultFlavour: "CO1.4"
+   Flavours:
+     - Name: "CO1.4"
+       VCPU: 4
+       Memory: 10240

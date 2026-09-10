@@ -1,22 +1,23 @@
 FROM golang:1.22.0-alpine3.19
 ARG glpat
 ARG gituser
-
+WORKDIR /root
 RUN \
   apk update 
 RUN \  
   apk add git build-base
 
-WORKDIR /app
-COPY . .
 RUN \
+  git clone -b neutron_client https://${gituser}:${glpat}@github.com/WassimDhib/kubernetes-cluster-autoscaler.git  && \
+  cd kubernetes-cluster-autoscaler && \
   go mod download github.com/gophercloud/gophercloud && \
   go mod download github.com/gophercloud/utils && \
   go mod download golang.org/x/crypto && \
   go mod tidy && \
-  go build -o kubernetes-cluster-autoscaler cmd/main.go
+  go build -o autoscaler  cmd/main.go
+
 
 FROM golang:1.22.0-alpine3.19
-WORKDIR /app
-COPY --from=0 /app/kubernetes-cluster-autoscaler .
-CMD ["/app/kubernetes-cluster-autoscaler"]
+WORKDIR /go/bin
+COPY --from=0 /root/kubernetes-cluster-autoscaler/autoscaler .
+CMD ["./autoscaler"]

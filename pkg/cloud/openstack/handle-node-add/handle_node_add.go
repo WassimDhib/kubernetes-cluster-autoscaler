@@ -2,36 +2,42 @@ package handlenodeadd
 
 import (
 	"context"
-	"github.com/Chathuru/kubernetes-cluster-autoscaler/pkg/cloud/openstack"
-	"github.com/Chathuru/kubernetes-cluster-autoscaler/pkg/common/datastructures"
-	"github.com/gophercloud/gophercloud/openstack/compute/v2/servers"
-	"github.com/gophercloud/utils/openstack/imageservice/v2/images"
-	"github.com/gophercloud/utils/openstack/compute/v2/flavors"
-	"github.com/gophercloud/utils/openstack/networking/v2/networks"
-	"github.com/gophercloud/utils/openstack/networking/v2/extensions/security/groups"
-	v1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/rest"
 	"log"
-	"math/rand"
 	"strings"
 	"sync"
 	"time"
+	"math/rand"
+	"github.com/gophercloud/gophercloud/openstack/compute/v2/servers"
+	"github.com/gophercloud/utils/openstack/compute/v2/flavors"
+	"github.com/gophercloud/utils/openstack/imageservice/v2/images"
+	"github.com/gophercloud/utils/openstack/networking/v2/networks"
+	"github.com/gophercloud/utils/openstack/networking/v2/extensions/security/groups"
+		v1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
+	"github.com/WassimDhib/kubernetes-cluster-autoscaler/pkg/cloud/openstack"
+	"github.com/WassimDhib/kubernetes-cluster-autoscaler/pkg/common/datastructures"
+
 )
 
 var (
 	triggerLock    bool
 	wg             sync.WaitGroup
 	pendingPodList []string
+	NetworkUUID_a  string
+	NetworkUUID_d  string
+	NetworkUUID_p  string
 )
 
-// IsNeededPendingStatus Check whether the pod in in pending state
+// IsNeededPendingStatus checks if a pod is in a pending state due to resource insufficiency.
 func IsNeededPendingStatus(status v1.PodCondition) bool {
-	return strings.Contains(status.Message, "Insufficient") && (strings.Contains(status.Message, "cpu") || strings.Contains(status.Message, "memory")) && !strings.Contains(status.Message, "had taint {node.kubernetes.io/not-ready: }, that the pod didn't tolerate")
+	return strings.Contains(status.Message, "Insufficient") &&
+		(strings.Contains(status.Message, "cpu") || strings.Contains(status.Message, "memory")) &&
+		!strings.Contains(status.Message, "had taint {node.kubernetes.io/not-ready: }, that the pod didn't tolerate")
 }
 
-// ModifyEventAnalyzer Analyze the Kubernetes events to capture pending nodes
+// ModifyEventAnalyzer analyzes Kubernetes events to capture pending states.
 func ModifyEventAnalyzer(EventList datastructures.Event, config *rest.Config) {
 	status := EventList.Object.Status.Conditions[0]
 	if EventList.Object.Status.Phase == "Pending" && status.Type == "PodScheduled" && status.Status == "False" {
@@ -42,20 +48,25 @@ func ModifyEventAnalyzer(EventList datastructures.Event, config *rest.Config) {
 		}
 	}
 
-	if EventList.Object.Status.Phase == "Pending" && len(pendingPodList) >= 1 || pendingPodList != nil {
+	if EventList.Object.Status.Phase == "Pending" && (len(pendingPodList) > 0 || pendingPodList != nil) {
 		PodStatus(EventList.Object)
 	}
 }
 
-// TriggerStatusCheck Trigger adding a new Kubernetes worker node
+// TriggerStatusCheck triggers the addition of a new Kubernetes worker node.
 func TriggerStatusCheck(pod v1.Pod, config *rest.Config) {
 	clientSet, err := kubernetes.NewForConfig(config)
 	if err != nil {
 		log.Println(err)
+		return
 	}
 
-	node, _ := clientSet.CoreV1().Nodes().List(context.TODO(), metav1.ListOptions{})
-	nodeCount := len(node.Items)
+	nodes, err := clientSet.CoreV1().Nodes().List(context.TODO(), metav1.ListOptions{})
+	if err != nil {
+		log.Println(err)
+		return
+	}
+	nodeCount := len(nodes.Items)
 
 	if !triggerLock && nodeCount < openstackinit.MaxNodeCount {
 		log.Println("[INFO] Node add trigger.")
@@ -68,14 +79,14 @@ func TriggerStatusCheck(pod v1.Pod, config *rest.Config) {
 		if nodeCount == openstackinit.MaxNodeCount {
 			log.Println("[INFO] Max node count reached")
 		} else if PendingPodListCheck(pod.Name) {
-			log.Println("[INFO] Node add triggerd. Waiting for new node")
+			log.Println("[INFO] Node add triggered. Waiting for new node")
 			pendingPodList = append(pendingPodList, pod.Name)
 		}
 		wg.Done()
 	}
 }
 
-// PodStatus Check the status of the pending pod which trigger new node adding process
+// PodStatus checks the status of the pending pod which triggers the new node addition process.
 func PodStatus(pod v1.Pod) {
 	conditions := pod.Status.Conditions[0]
 
@@ -94,7 +105,7 @@ func PodStatus(pod v1.Pod) {
 	}
 }
 
-// PendingPodListCheck Check for multiple node add triggers from the same pending pod
+// PendingPodListCheck checks for multiple node add triggers from the same pending pod.
 func PendingPodListCheck(podName string) bool {
 	for _, pendingPodName := range pendingPodList {
 		if pendingPodName == podName {
@@ -104,7 +115,7 @@ func PendingPodListCheck(podName string) bool {
 	return true
 }
 
-// GetOpenstackFlavor Select a flavor from the list of user definded flavors
+// GetOpenstackFlavor selects a flavor from the list of user-defined flavors.
 func GetOpenstackFlavor(pod v1.Pod) string {
 	defer PanicRecovery()
 	var requestsCPU, requestsMemory int64
@@ -138,7 +149,7 @@ func GetOpenstackFlavor(pod v1.Pod) string {
 	return openstackinit.FlavorsList.FlavorDefault
 }
 
-// GetNodeName Generate a random name for the Kubernetes worker node
+// GetNodeName generates a random name for the Kubernetes worker node.
 func GetNodeName() string {
 	rand.Seed(time.Now().UnixNano())
 	chars := []rune("ABCDEFGHIJKLMNOPQRSTUVWXYZ" + "abcdefghijklmnopqrstuvwxyz" + "0123456789")
@@ -148,60 +159,90 @@ func GetNodeName() string {
 		b.WriteRune(chars[rand.Intn(len(chars))])
 	}
 	str := b.String()
-	return openstackinit.PlatformPrefix+"kube-worker-" + str
+	return openstackinit.PlatformPrefix + "kube-worker-" + str
 }
 
-// TriggerAddNode Create new OpenStack virtual machine
+// TriggerAddNode configures and creates a new OpenStack VM for the Kubernetes worker node.
 func TriggerAddNode(flavorName string) {
 	defer PanicRecovery()
 	client := openstackinit.GetOpenstackToken()
-	client_neutron := openstackinit.GetOpenstackNeutronToken()
-
-        imageId, err := images.IDFromName(client, openstackinit.ImageName)
-	flavorID, err := flavors.IDFromName(client, flavorName)	 
-	SecurityGroupId, err := groups.IDFromName(client_neutron, openstackinit.SecurityGroupName)
-	NetworkUUID_a, err := networks.IDFromName(client_neutron, openstackinit.NetworkUUID_a)
-	NetworkUUID_d, err := networks.IDFromName(client_neutron, openstackinit.NetworkUUID_d)
-	NetworkUUID_p, err := networks.IDFromName(client_neutron, openstackinit.NetworkUUID_p)
-	Node_Name := GetNodeName()
-	
+	clientNeutron := openstackinit.GetOpenstackNeutronToken()
+	imageID, err := images.IDFromName(client, openstackinit.ImageName)
+	checkErr(err)
+	flavorID, err := flavors.IDFromName(client, flavorName)
+	checkErr(err)
+	NodeName := GetNodeName()
 	userData := `#!/usr/bin/env bash
-curl -L -s `+openstackinit.RepoBaseUrl+`/install.sh | sudo bash -s -- \
-    -i init
-`
-
-	log.Printf("[INFO] Creating new node with config : Node_Name = %s, imageId = %s, flavorID = %s, SecurityGroupId = %s, NetworkUUID_a = %s, NetworkUUID_d = %s, NetworkUUID_p = %s", Node_Name, imageId, flavorID, SecurityGroupId, NetworkUUID_a, NetworkUUID_d, NetworkUUID_p )
-	serverCreatOpts := servers.CreateOpts{
-		Name:          Node_Name,
-		FlavorRef:     flavorID,
-		ImageRef:      imageId,
-		SecurityGroups: []string{SecurityGroupId},
-		Networks:       []servers.Network{{UUID: NetworkUUID_a}, {UUID: NetworkUUID_d}, {UUID: NetworkUUID_p}},
-		UserData:       []byte(userData),
+	curl -L -s ` + openstackinit.RepoBaseUrl + `/install.sh | sudo bash -s -- \
+		-i init
+	`
+	networkAdminName := openstackinit.NetworkAdmin.Name
+	NetworkUUID_a, err := networks.IDFromName(clientNeutron, openstackinit.NetworkAdmin.Name)
+	NetworkUUID_d, err := networks.IDFromName(clientNeutron, openstackinit.NetworkData.Name)
+	NetworkUUID_p, err := networks.IDFromName(clientNeutron, openstackinit.NetworkPub.Name)
+	OpenBar, err := groups.IDFromName(clientNeutron, openstackinit.Openbar_SG)
+	log.Printf("[INFO] Resolved network admin=%q (%s), data=%s, pub=%s, security group=%s", networkAdminName, NetworkUUID_a, NetworkUUID_d, NetworkUUID_p, OpenBar)
+	log.Printf("[INFO] Creating new node %s (image=%s, flavor=%s)", NodeName, imageID, flavorID)
+	serverCreateOpts := servers.CreateOpts{
+		Name:      NodeName,
+		FlavorRef: flavorID,
+		ImageRef:  imageID,
+		Networks:  []servers.Network{{UUID: NetworkUUID_a}, {UUID: NetworkUUID_d}, {UUID: NetworkUUID_p}},
+		SecurityGroups: []string{OpenBar},
+		UserData:  []byte(userData),
 	}
-
-	server, err := servers.Create(client, serverCreatOpts).Extract()
-	if err != nil {
-		panic(err)
-	}
+	server, err := servers.Create(client, serverCreateOpts).Extract()
+	checkErr(err)
 	log.Printf("[INFO] New node added. Node ID - %s", server.ID)
+	log.Printf("[INFO] Proceeding to SGs creation for openstack instance - %s", server.ID)
+
+	var adm1, adm2 string
+
+	// Retrieve security group IDs for each category
+	adm1, err = groups.IDFromName(clientNeutron, openstackinit.NetworkAdmin.SecurityGroups[0])
+	checkErr(err)
+	adm2, err = groups.IDFromName(clientNeutron, openstackinit.NetworkAdmin.SecurityGroups[1])
+	checkErr(err)
+	log.Printf("[INFO] Resolved admin security groups: %s=%s, %s=%s", openstackinit.NetworkAdmin.SecurityGroups[0], adm1, openstackinit.NetworkAdmin.SecurityGroups[1], adm2)
+
+	
+
+	// portsCreateOpts := []ports.CreateOpts{
+	// 	{
+	// 		NetworkID:      NetworkUUID_a,
+	// 		SecurityGroups: &[]string{adm1, adm2},
+	// 		DeviceID: server.ID,
+	// 	},
+	// }
+
+
+	// for _, createOpts := range portsCreateOpts {
+	// 	port, err := ports.Create(clientNeutron, createOpts).Extract()
+	// 	if err != nil {
+	// 		log.Fatalf("Error creating port: %v", err)
+	// 	}
+	// 	log.Printf("Created port: %+v", port)
+	// }
+	
+	
 	NewNodeStatus(server.ID)
 }
 
-// NewNodeStatus Check the status of the new node
+// NewNodeStatus checks the status of the new node.
 func NewNodeStatus(id string) {
 	log.Println("[INFO] Checking node status")
 	ready, err := NewNodeReady(id)
 	if err != nil {
-		log.Printf("Error creating the server %s", err)
+		log.Printf("[ERROR] Error creating the server %s", err)
+		return
 	}
 	if ready {
 		log.Println("[INFO] Node is running.")
 	}
-	defer wg.Done()
+	wg.Done()
 }
 
-// NewNodeReady Check the status of the new node loop
+// NewNodeReady continuously checks if the new node is ready and active.
 func NewNodeReady(id string) (bool, error) {
 	client := openstackinit.GetOpenstackToken()
 
@@ -214,13 +255,21 @@ func NewNodeReady(id string) (bool, error) {
 		if server.Status == "ACTIVE" {
 			return true, nil
 		}
+		time.Sleep(10 * time.Second) // Pause to prevent tight loop
 	}
 }
 
-// PanicRecovery handle panic
+// PanicRecovery recovers from panics to ensure application stability.
 func PanicRecovery() {
 	if r := recover(); r != nil {
-		log.Println(r)
-		triggerLock = false
+		log.Println("[ERROR]", r)
+		triggerLock = false // Reset lock to prevent deadlock
+	}
+}
+
+// checkErr is a helper to handle errors succinctly.
+func checkErr(err error) {
+	if err != nil {
+		log.Fatal(err)
 	}
 }
